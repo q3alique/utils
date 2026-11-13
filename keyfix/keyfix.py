@@ -46,7 +46,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-VERSION = "1.1"
+VERSION = "1.2"
 
 # --------------------------------------------------------------------------
 # constants
@@ -343,6 +343,48 @@ def s_prefixes_inline_keep(body):
     return "".join(out)
 
 
+# Base64 runs considered when carving by template. Real PEM bodies are uniform
+# runs wrapped at 64 (PKCS#1/PKCS#8) or 70 (OpenSSH) characters; junk runs
+# (words, numbers, timestamps) are almost always far shorter than that.
+CARVE_RUN_RE = re.compile(r"[A-Za-z0-9+/=]{4,}")
+
+
+def s_carve_template(body):
+    """Template-driven extraction: keep only base64 runs that fit the wrap width.
+
+    Instead of enumerating junk patterns, use what a valid key looks like:
+    measure the modal base64-run length across the body (the wrap width), then
+    per line keep the run(s) that match it. Unknown prefixes, trailing junk and
+    embedded words are discarded by construction because they never fit the
+    template. Headers and body boundaries never enter the output.
+    """
+    runs_per_line = []
+    for ln in body.split("\n"):
+        if PROCTYPE_RE.search(ln) or DEKINFO_RE.search(ln):
+            continue  # known PEM header component: never part of the body
+        runs_per_line.append(CARVE_RUN_RE.findall(ln))
+    flat = [r for runs in runs_per_line for r in runs]
+    if len(flat) < 3:
+        return None
+    long_runs = [len(r) for r in flat if len(r) >= 32]
+    pool = long_runs if long_runs else [len(r) for r in flat]
+    modal = max(set(pool), key=pool.count)
+    if modal < 16:
+        return None  # no believable wrap width in this body
+    picked = []
+    for runs in runs_per_line:
+        if not runs or max(len(r) for r in runs) < 16:
+            # pure junk line (e.g. the dangling line number of the END marker)
+            continue
+        total = sum(len(r) for r in runs)
+        # space-injected single line: several runs that together match the width
+        if len(runs) > 1 and abs(total - modal) <= 3:
+            picked.append("".join(runs))
+        else:
+            picked.append(min(runs, key=lambda r: abs(len(r) - modal)))
+    return "".join(picked)
+
+
 def s_sequence_numbers(body):
     """Sequential line numbers glued mid-text (newlines lost in transit).
 
@@ -416,6 +458,7 @@ STRATEGIES = [
         True,
     ),
     (s_prefixes_inline_keep, "stripped prefixes/headers, kept base64 lines only", True),
+    (s_carve_template, "carved base64 runs matching the key wrap-width template", True),
     (s_keep_b64, "kept only base64 characters", True),
     (
         lambda b: "".join(c for c in s_strip_prefixes(b) if c in B64_ALPHABET),
@@ -848,6 +891,45 @@ def secure_permissions(path):
 # --------------------------------------------------------------------------
 
 
+def mask_line(ln):
+    """Mask key material for safe sharing: letters -> x, digits -> 9,
+    punctuation and spacing kept so the surrounding junk structure stays
+    visible. The mask is not reversible."""
+    out = []
+    for ch in ln:
+        if ch.isdigit():
+            out.append("9")
+        elif ch.isalpha():
+            out.append("x")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def inspect_blocks(blocks):
+    """Print a masked structural analysis of each key block."""
+    for idx, (label, body) in enumerate(blocks, 1):
+        lines = body.split("\n")
+        print("key #%d: %s (%d body lines, %d chars)" % (idx, label, len(lines), len(body)))
+        shown = lines
+        elided = False
+        if len(lines) > 60:
+            shown = lines[:8] + [None] + lines[-4:]
+            elided = True
+        for i, ln in enumerate(shown):
+            if ln is None:
+                print("    ... (%d more lines)" % (len(lines) - 12))
+                continue
+            print("  %3d [%3d] %s" % (i, len(ln), mask_line(ln)))
+        # run-length overview: shows the wrap width and the junk shape
+        all_runs = [len(r) for r in CARVE_RUN_RE.findall(body)]
+        if all_runs:
+            from collections import Counter
+            common = Counter(all_runs).most_common(5)
+            print("  base64 run lengths (top 5): %s" % ", ".join("%dx%d" % (c, n) for n, c in common))
+    print("(masked output: letters shown as x, digits as 9 - no key material)")
+
+
 def build_parser():
     epilog = """examples:
   python keyfix.py broken.txt                  -> writes broken_fixed
@@ -874,6 +956,12 @@ def build_parser():
     )
     ap.add_argument(
         "-f", "--force", action="store_true", help="overwrite existing output file(s)"
+    )
+    ap.add_argument(
+        "--inspect",
+        action="store_true",
+        help="show a masked structural analysis of the key block(s) and exit; "
+        "safe to share - no key material",
     )
     ap.add_argument("-V", "--version", action="version", version="keyfix " + VERSION)
     return ap
@@ -906,6 +994,10 @@ def main(argv=None):
     if not blocks:
         log("[!] no '-----BEGIN ... PRIVATE KEY-----' block found in %s" % src)
         return 1
+
+    if args.inspect:
+        inspect_blocks(blocks)
+        return 0
 
     log("[*] %s: %d bytes, %d key block(s) found" % (src, len(data), len(blocks)))
 
