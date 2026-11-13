@@ -66,15 +66,19 @@ B64_ALPHABET = set(
 )
 WS_RE = re.compile(r"\s+")
 
-# Markers are matched loosely: 3+ dashes, optional whitespace, label, 3+ dashes.
-# The label may span lines, contain junk or stray dashes, and the spaces inside
-# the marker itself may have been stripped ("BEGINOPENSSHPRIVATEKEY").
-# normalize_label() sorts out whatever we capture.
+# Markers are matched loosely: the dash runs may be split by spaces or line
+# breaks ("---- -END", "-----\n--"), the label may span lines, contain junk or
+# stray dashes, the spaces inside the marker itself may have been stripped
+# ("BEGINOPENSSHPRIVATEKEY"), and even the literal words BEGIN/END can be split
+# by a hard wrap ("BEG\nIN", "EN\nD"). normalize_label() sorts out whatever we
+# capture, and validation gates every extraction.
 BEGIN_RE = re.compile(
-    r"-{3,}\s*BEGIN\s*([A-Za-z][\sA-Za-z0-9\-]*?)\s*-{3,}", re.IGNORECASE
+    r"[-\s]{3,}B\s*E\s*G\s*I\s*N\s*([A-Za-z][\sA-Za-z0-9\-]*?)\s*[-\s]{3,}",
+    re.IGNORECASE,
 )
 END_RE = re.compile(
-    r"-{3,}\s*END\s*([A-Za-z][\sA-Za-z0-9\-]*?)\s*-{3,}", re.IGNORECASE
+    r"[-\s]{3,}E\s*N\s*D\s*([A-Za-z][\sA-Za-z0-9\-]*?)\s*[-\s]{3,}",
+    re.IGNORECASE,
 )
 
 SMART_QUOTES = {"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'"}
@@ -500,9 +504,18 @@ def _ssh_string(data, off):
 
 # Fields after the keytype string inside the private section, including the
 # trailing comment string that OpenSSH always writes:
-#   ssh-rsa / ssh-dss: n, e, d, iqmp, p, q, comment
+#   ssh-rsa:  n, e, d, iqmp, p, q, comment
+#   ssh-dss:  p, q, g, y, x, comment
 #   ssh-ed25519:       public, private, comment
-_SECRET_FIELD_COUNTS = {b"ssh-rsa": 7, b"ssh-dss": 7, b"ssh-ed25519": 3}
+#   ecdsa-sha2-*:      curve, public point, private integer, comment
+_SECRET_FIELD_COUNTS = {
+    b"ssh-rsa": 7,
+    b"ssh-dss": 6,
+    b"ssh-ed25519": 3,
+    b"ecdsa-sha2-nistp256": 4,
+    b"ecdsa-sha2-nistp384": 4,
+    b"ecdsa-sha2-nistp521": 4,
+}
 
 
 def _validate_secret(secret, pub_blob, ktype):
