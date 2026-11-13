@@ -650,7 +650,8 @@ def deep_structure(der, label, headers_removed, block_size=8):
             pass
     if headers_removed:
         # Traditional encrypted PEM: the body is opaque ciphertext, so the
-        # strongest available checks are header evidence + block-size sanity.
+        # strongest available checks are header evidence and block-size sanity
+        # (the ciphertext is the AES/DES-encrypted DER, not a modulus-sized blob).
         if len(der) >= 64 and len(der) % block_size == 0:
             return {
                 "encrypted": True,
@@ -737,7 +738,12 @@ def render_pem(label, b64, extra_headers=None):
 
 
 def validate_candidate(label, b64, headers_removed, extra_headers):
-    """Return (pem, encrypted, detail, info) when b64 is a real key body."""
+    """Return (pem, encrypted, detail, info, strength) when b64 is a real key body.
+
+    strength 2 means the candidate was confirmed by a full cryptography parse;
+    strength 1 means it was accepted on structural evidence only (e.g. opaque
+    ciphertext in an encrypted PEM).
+    """
     der = decode_canonical_b64(b64)
     if der is None:
         return None
@@ -748,39 +754,52 @@ def validate_candidate(label, b64, headers_removed, extra_headers):
     pem = render_pem(label, b64, extra_headers)
     encrypted = struct["encrypted"]
     detail = struct["how"]
+    strength = 1
     if HAVE_CRYPTOGRAPHY:
         ok, enc, msg = deep_validate(pem)
         if ok:
-            detail = msg + " + " + detail.lower() if struct.get("weak") else msg
+            detail = msg + (" + " + detail.lower() if struct.get("weak") else "")
             encrypted = enc or encrypted
+            strength = 2
         elif struct.get("weak"):
             detail += " [weak validation: cryptography could not verify the ciphertext]"
     info = struct.get("info") or describe_key(pem) or ("encrypted key" if encrypted else "n/a")
-    return pem, encrypted, detail, info
+    return pem, encrypted, detail, info, strength
 
 
 def recover_one(label, body):
-    """Try every strategy on one key body; return a result dict."""
+    """Try every strategy on one key body; return a result dict.
+
+    All strategies are evaluated so a cryptography-confirmed recovery always
+    beats a weak-only acceptance from an earlier (more aggressive) strategy.
+    """
     body = "".join(ch for ch in body if ch not in ZERO_WIDTH)
     headers_present = bool(HEADER_HINT_RE.search(body))
     extra_headers = extract_pem_headers(body) if headers_present else []
     tried = []
+    best = None  # (strength, verdict, description)
     for fn, desc, removes_headers in STRATEGIES:
         b64 = fn(body)
         if not b64:
             continue
-        verdict = validate_candidate(label, b64, headers_present and removes_headers, extra_headers)
-        if verdict:
-            pem, encrypted, detail, info = verdict
-            return {
-                "pem": pem,
-                "label": label,
-                "encrypted": encrypted,
-                "strategy": desc,
-                "detail": detail,
-                "info": info,
-            }
-        tried.append(desc)
+        verdict = validate_candidate(
+            label, b64, headers_present and removes_headers, extra_headers
+        )
+        if verdict is None:
+            tried.append(desc)
+            continue
+        if best is None or verdict[4] > best[0]:
+            best = (verdict[4], verdict, desc)
+    if best is not None:
+        _strength, (pem, encrypted, detail, info, _s), desc = best
+        return {
+            "pem": pem,
+            "label": label,
+            "encrypted": encrypted,
+            "strategy": desc,
+            "detail": detail,
+            "info": info,
+        }
     return {
         "error": "no cleaning strategy produced a structurally valid key",
         "label": label,
