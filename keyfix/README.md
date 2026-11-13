@@ -65,19 +65,26 @@ cat broken.log | python keyfix.py -o id_rsa  # read from stdin ('-' also means s
 | `--all` | Extract every valid key found, written as `<output>_1`, `<output>_2`, ... |
 | `--stdout` | Print recovered key(s) to stdout instead of writing files. |
 | `-f`, `--force` | Overwrite existing output file(s). |
+| `--inspect` | Print a masked structural analysis of the key block(s) and exit. Letters are shown as `x` and digits as `9`, so the output is safe to share and contains no key material. |
 | `-V`, `--version` | Print version. |
 
 Exit codes: `0` at least one key recovered, `1` nothing recovered, `2` usage error.
 
 ## What it repairs
 
-- Line number prefixes from `cat -n`, `nl`, `grep -n` (`12:`) and editors (`12.`, `12)`, `12]`)
+- Line number prefixes from `cat -n`, `nl`, `grep -n` (`12:`) and editors (`12.`, `12)`, `12]`),
+  including numbering taken from deep inside a large file (`2923 ... 2952`)
 - Sequential line numbers glued into the middle of the base64, the classic result of
   pasting a numbered key into a tool that strips newlines (web forms, chat apps,
   PowerShell `echo`, SIEM event fields), including ambiguous boundaries such as
   `...kebd2115:` where content `bd21` is glued to the prefix `15:`
 - Log prefixes: bracketed timestamps, python logging lines, classic syslog with
   `program[pid]:` prefixes, generic `WORD:` prefixes, and composed combinations of these
+- **Unknown junk styles, via template carving**: key bodies are uniform base64 runs
+  wrapped at a fixed width (64 for PKCS, 70 for OpenSSH). The tool measures the wrap
+  width, then keeps only the runs that fit it, so arbitrary prefix and suffix junk
+  (angle brackets, table pipes, trailing numbers, formats never seen before) is
+  discarded by construction rather than by pattern matching
 - Injected spaces and tabs inside the base64, soft wraps at any width
 - CRLF endings, missing trailing newlines, UTF-16 encoded files (Windows PowerShell)
 - Literal `\n` escape sequences from JSON or log transport
@@ -88,6 +95,10 @@ Exit codes: `0` at least one key recovered, `1` nothing recovered, `2` usage err
 - PEM headers (`Proc-Type: 4,ENCRYPTED`, `DEK-Info: ...`) flattened onto one line with
   the body, split across chunk boundaries, or buried under log prefixes
 - Any mixture of the above, plus files containing several different keys (`--all`)
+
+When a file cannot be recovered, run it with `--inspect` and compare the masked line
+shapes against the examples above: the junk pattern around the key becomes visible
+without exposing any key material.
 
 ## Supported key formats
 
@@ -164,11 +175,11 @@ python tests/run_tests.py
 
 The harness generates throwaway keys in every supported format (RSA PEM plain and
 encrypted, RSA in OpenSSH container format plain and encrypted, ed25519 plain and
-encrypted, PKCS#8), mangles them in ten realistic ways, runs keyfix on each combination,
+encrypted, PKCS#8), mangles them in thirteen realistic ways, runs keyfix on each combination,
 and verifies that the recovered base64 is byte-identical to the original, plus a
 cross-check with `ssh-keygen -y` where the local build can read the key type. It also
 covers multi-key files, stdin, stdout mode, garbage input rejection and a hard-corrupted
-key that must be refused rather than recovered. All 75 checks pass.
+key that must be refused rather than recovered. All 96 checks pass.
 
 The harness wipes and regenerates its throwaway keys on every run and needs `ssh-keygen`
 on your PATH.
