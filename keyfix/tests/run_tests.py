@@ -70,6 +70,18 @@ def make_keys():
     r = sh([KEYGEN, "-p", "-q", "-P", "", "-N", "", "-m", "PKCS8", "-f", keys["rsa_pkcs8"][0]])
     if r.returncode != 0:
         raise SystemExit("PKCS8 conversion failed: " + r.stderr)
+    keys["ec_pem"] = (gen_key("ec_pem", "", ["-t", "ecdsa", "-b", "256", "-m", "PEM"]), "")
+    keys["ec_pem_enc"] = (gen_key("ec_pem_enc", PASSPHRASE, ["-t", "ecdsa", "-b", "256", "-m", "PEM"]), PASSPHRASE)
+    keys["dsa_openssh"] = (gen_key("dsa_openssh", "", ["-t", "dsa", "-b", "1024"]), "")
+    # modern ssh-keygen builds cannot export DSA as traditional SEC1 PEM;
+    # generate that format with cryptography directly
+    dsa_path = WORK / "dsa_pem"
+    from cryptography.hazmat.primitives.asymmetric import dsa as _dsa
+    from cryptography.hazmat.primitives import serialization as _ser
+    k = _dsa.generate_private_key(key_size=1024)
+    dsa_path.write_bytes(k.private_bytes(
+        _ser.Encoding.PEM, _ser.PrivateFormat.TraditionalOpenSSL, _ser.NoEncryption()))
+    keys["dsa_pem"] = (dsa_path, "")
     return keys
 
 
@@ -124,6 +136,22 @@ def m_crlf76(pem):
     return "\r\n".join(body[i : i + 76] for i in range(0, len(body), 76)) + "\r\n"
 
 
+def m_numbered_offset(pem):
+    """Numbered lines starting at a large offset (pulled from a big log file),
+    single-space separator, exactly like 'cat -n' output around line 2923."""
+    return "\n".join("%d %s" % (2923 + i, ln) for i, ln in enumerate(pem.splitlines())) + "\n"
+
+
+def m_angle_bracket_numbers(pem):
+    """Bare numbers in angle brackets: '<2927> ' - no prefix rule matches this."""
+    return "\n".join("<%d> %s" % (2927 + i, ln) for i, ln in enumerate(pem.splitlines())) + "\n"
+
+
+def m_postfixed_numbers(pem):
+    """Line numbers appended at the END of each line instead of the front."""
+    return "\n".join("%s %d" % (ln, 4000 + i) for i, ln in enumerate(pem.splitlines())) + "\n"
+
+
 def m_flat_oneline(pem):
     """PowerShell 'echo' of a pasted block: newlines lost, 'N: ' glued mid-text."""
     numbered = "".join("%d: %s" % (i, ln) for i, ln in enumerate(pem.splitlines()))
@@ -141,6 +169,9 @@ MANGLERS = [
     ("syslog_prefix", m_syslog),
     ("crlf_rewrapped76", m_crlf76),
     ("flat_oneline_powershell", m_flat_oneline),
+    ("numbered_offset_2923", m_numbered_offset),
+    ("angle_bracket_numbers", m_angle_bracket_numbers),
+    ("postfixed_numbers", m_postfixed_numbers),
 ]
 
 
