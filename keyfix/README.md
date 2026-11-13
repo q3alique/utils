@@ -107,13 +107,17 @@ without exposing any key material.
 | `RSA PRIVATE KEY` | PKCS#1 | plain and traditional encrypted (`Proc-Type`) |
 | `PRIVATE KEY` | PKCS#8 | plain |
 | `ENCRYPTED PRIVATE KEY` | PKCS#8 encrypted | envelope is DER-parsed |
-| `OPENSSH PRIVATE KEY` | OpenSSH container | plain and encrypted, full structural parse |
-| `EC PRIVATE KEY` | SEC1 | |
+| `OPENSSH PRIVATE KEY` | OpenSSH container | plain and encrypted, full structural parse; covers RSA, ed25519, ECDSA and DSA keys in OpenSSH format |
+| `EC PRIVATE KEY` | SEC1 | plain and traditional encrypted |
 | `DSA PRIVATE KEY` | SEC1 | |
 
 Recovered keys are re-emitted canonically: 64 character lines, LF endings, trailing
 newline, with the original label preserved. Encrypted keys stay encrypted and are flagged
 in the report; you still need the passphrase to use them.
+
+A note on EC keys produced by older OpenSSL 1.x releases: they ship a second
+`EC PARAMETERS` block before the key. That block is intentionally skipped (its label
+contains no `PRIVATE KEY`), and modern SSH clients parse `EC PRIVATE KEY` without it.
 
 ## Example: a mangled paste
 
@@ -175,11 +179,12 @@ python tests/run_tests.py
 
 The harness generates throwaway keys in every supported format (RSA PEM plain and
 encrypted, RSA in OpenSSH container format plain and encrypted, ed25519 plain and
-encrypted, PKCS#8), mangles them in thirteen realistic ways, runs keyfix on each combination,
-and verifies that the recovered base64 is byte-identical to the original, plus a
-cross-check with `ssh-keygen -y` where the local build can read the key type. It also
-covers multi-key files, stdin, stdout mode, garbage input rejection and a hard-corrupted
-key that must be refused rather than recovered. All 96 checks pass.
+encrypted, EC SEC1 plain and encrypted, DSA in OpenSSH container format and DSA SEC1,
+PKCS#8), mangles them in thirteen realistic ways, runs keyfix on each combination, and
+verifies that the recovered base64 is byte-identical to the original, plus a cross-check
+with `ssh-keygen -y` where the local build can read the key type. It also covers
+multi-key files, stdin, stdout mode, garbage input rejection and a hard-corrupted key
+that must be refused rather than recovered. All 148 checks pass.
 
 The harness wipes and regenerates its throwaway keys on every run and needs `ssh-keygen`
 on your PATH.
